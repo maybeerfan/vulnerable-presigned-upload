@@ -1,0 +1,79 @@
+services:
+  minio:
+    image: pgsty/minio:latest
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      default:
+        aliases:
+          - s3minio.net
+
+  createbuckets:
+    image: pgsty/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 8;
+      mc alias set myminio http://minio:9000 minioadmin minioadmin123;
+      mc mb myminio/apps --ignore-existing;
+      mc anonymous set download myminio/apps;
+      mc anonymous set public myminio/apps;
+      exit 0;
+      "
+
+  backend:
+    build: ./backend
+    container_name: graphql-backend
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      MINIO_BUCKET: apps
+      PUBLIC_MINIO_ENDPOINT: http://s3minio.net:9000
+      CDN_BASE_URL: http://cdn.erfan.net
+      PORT: 4000
+    ports:
+      - "4000:4000"
+    depends_on:
+      - minio
+      - createbuckets
+    networks:
+      default:
+        aliases:
+          - upload.erfan.net
+
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      default:
+        aliases:
+          - erfan.net
+
+  cdn:
+    build: ./cdn
+    container_name: cdn
+    ports:
+      - "8080:80"
+    depends_on:
+      - minio
+    networks:
+      default:
+        aliases:
+          - cdn.erfan.net
+
+volumes:
+  minio_data:

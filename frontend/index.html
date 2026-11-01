@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Vulnerable Presigned Upload Lab</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ========== LOGIN PAGE ========== -->
+  <div id="loginPage">
+    <h1>Login</h1>
+    <p>Use the lab credentials to continue.</p>
+
+    <div>
+      <label>Username</label><br />
+      <input type="text" id="username" value="labuser" />
+    </div>
+    <div>
+      <label>Password</label><br />
+      <input type="password" id="password" value="labpass123" />
+    </div>
+    <br />
+    <button onclick="login()">Login</button>
+    <p id="loginError" style="color: red;"></p>
+  </div>
+
+  <!-- ========== UPLOADER PAGE ========== -->
+  <div id="uploaderPage" class="hidden">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <h1>Uploader</h1>
+      <button onclick="logout()">Logout</button>
+    </div>
+
+    <p>This lab reproduces a classic Content-Type Confusion vulnerability in presigned upload flows.</p>
+
+    <div class="toggle-box">
+      <label>
+        <input type="checkbox" id="secureToggle" />
+        <strong>Secure Mode</strong> — when checked, Content-Type is enforced in the signature
+      </label>
+    </div>
+
+    <input type="file" id="fileInput" />
+    <br />
+    <button onclick="upload()">Upload File</button>
+    <button class="danger-btn" onclick="deleteAll()">Delete All</button>
+
+    <h3>Result</h3>
+    <pre id="result">No file uploaded yet...</pre>
+
+    <h3>Uploaded Files</h3>
+    <div id="gallery"></div>
+  </div>
+
+  <script>
+    const API = '/graphql';
+
+    function getAuthHeader() {
+      const token = localStorage.getItem('auth');
+      return token ? { 'Authorization': token } : {};
+    }
+
+    function showPage(page) {
+      document.getElementById('loginPage').classList.add('hidden');
+      document.getElementById('uploaderPage').classList.add('hidden');
+      document.getElementById(page).classList.remove('hidden');
+    }
+
+    function login() {
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+
+      if (username === 'labuser' && password === 'labpass123') {
+        const token = 'Basic ' + btoa(username + ':' + password);
+        localStorage.setItem('auth', token);
+        document.getElementById('loginError').textContent = '';
+        showPage('uploaderPage');
+        loadGallery();
+      } else {
+        document.getElementById('loginError').textContent = 'Invalid credentials';
+      }
+    }
+
+    function logout() {
+      localStorage.removeItem('auth');
+      showPage('loginPage');
+    }
+
+    async function loadGallery() {
+      const res = await fetch(API, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeader()
+        },
+        body: JSON.stringify({
+          query: `
+            query {
+              listAssets {
+                key
+                cdnUrl
+              }
+            }
+          `
+        })
+      });
+
+      const { data, errors } = await res.json();
+      const gallery = document.getElementById('gallery');
+      gallery.innerHTML = '';
+
+      if (errors || !data?.listAssets) {
+        gallery.innerHTML = '<p>Failed to load gallery</p>';
+        return;
+      }
+
+      if (data.listAssets.length === 0) {
+        gallery.innerHTML = '<p>No files uploaded yet.</p>';
+        return;
+      }
+
+      data.listAssets.forEach(asset => {
+        const div = document.createElement('div');
+        div.className = 'card';
+        div.innerHTML = `
+          <a href="${asset.cdnUrl}" target="_blank">
+            <img src="${asset.cdnUrl}" alt="uploaded" />
+          </a>
+          <div>${asset.key}</div>
+        `;
+        gallery.appendChild(div);
+      });
+    }
+
+    async function upload() {
+      const fileInput = document.getElementById('fileInput');
+      const file = fileInput.files[0];
+      if (!file) {
+        alert('Please select a file first');
+        return;
+      }
+
+      const isSecure = document.getElementById('secureToggle').checked;
+      const resultEl = document.getElementById('result');
+      resultEl.textContent = `Requesting presigned URL... (Secure Mode: ${isSecure ? 'ON' : 'OFF'})`;
+
+      // Step 1: GraphQL
+      const gqlRes = await fetch(API, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeader()
+        },
+        body: JSON.stringify({
+          query: `
+            query RequestAssetUpload($contentType: String!, $secure: Boolean) {
+              requestAssetUpload(contentType: $contentType, secure: $secure) {
+                uploadUrl
+                cdnUrl
+              }
+            }
+          `,
+          variables: {
+            contentType: 'image/png',
+            secure: isSecure
+          }
+        })
+      });
+
+      const { data, errors } = await gqlRes.json();
+      if (errors) {
+        resultEl.textContent = 'GraphQL Error:\n' + JSON.stringify(errors, null, 2);
+        return;
+      }
+
+      const { uploadUrl, cdnUrl } = data.requestAssetUpload;
+      resultEl.textContent += '\nPresigned URL received.\nUploading file...';
+
+      // Step 2: PUT (always sends Content-Type: image/png)
+      const putRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'image/png'
+        },
+        body: file
+      });
+
+      if (!putRes.ok) {
+        resultEl.textContent += `\nUpload failed: ${putRes.status} ${putRes.statusText}`;
+        return;
+      }
+
+      resultEl.innerHTML = `
+Upload successful! (Secure Mode: ${isSecure ? 'ON' : 'OFF'})
+
+CDN URL:
+<a href="${cdnUrl}" target="_blank">${cdnUrl}</a>
+      `.trim();
+
+      loadGallery();
+    }
+
+    async function deleteAll() {
+      if (!confirm('Are you sure you want to delete ALL uploaded files?')) {
+        return;
+      }
+
+      const resultEl = document.getElementById('result');
+      resultEl.textContent = 'Deleting all files...';
+
+      const res = await fetch(API, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeader()
+        },
+        body: JSON.stringify({
+          query: `
+            mutation {
+              deleteAllAssets
+            }
+          `
+        })
+      });
+
+      const { data, errors } = await res.json();
+
+      if (errors) {
+        resultEl.textContent = 'Error deleting files:\n' + JSON.stringify(errors, null, 2);
+        return;
+      }
+
+      resultEl.textContent = 'All files deleted successfully.';
+      loadGallery();
+    }
+
+    // On page load
+    if (localStorage.getItem('auth')) {
+      showPage('uploaderPage');
+      loadGallery();
+    } else {
+      showPage('loginPage');
+    }
+  </script>
+</body>
+</html>
