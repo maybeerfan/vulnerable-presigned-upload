@@ -2,6 +2,10 @@
 
 A fully dockerized lab that reproduces the classic **Content-Type Confusion → Stored XSS** vulnerability in presigned upload flows.
 
+## Real-World Context
+
+This lab is based on a real-world vulnerability pattern in presigned upload flows: an application may validate one content type while the upload service accepts and stores another. This project provides a controlled educational reproduction of that vulnerability class; it does not reproduce a specific product or incident.
+
 ## Architecture
 
 | Domain             | Service                               |
